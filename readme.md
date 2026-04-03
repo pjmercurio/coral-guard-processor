@@ -81,8 +81,10 @@ after/
     C1.ORF
     C2.ORF
     C3.ORF
+```
 
 ### Option 2: flat structure
+```text
 before/
   S1.ORF
   S2.ORF
