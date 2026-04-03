@@ -7,6 +7,8 @@ import cv2
 import rawpy
 import imageio.v3 as iio
 from skimage.color import rgb2lab, deltaE_ciede2000
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 # ============================================================
 # CONFIG
@@ -25,23 +27,23 @@ RAW_EXTENSIONS = {".orf", ".ORF", ".raw", ".RAW"}
 STD_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
 VALID_EXTENSIONS = RAW_EXTENSIONS | STD_IMAGE_EXTENSIONS
 
-# If using flat folders, filenames are matched by stem after stripping common
-# suffixes like _before / _after. Group is inferred from the first character.
+# If using flat folders, group is inferred from the first character.
+# Edit this if your naming convention differs.
 GROUP_PREFIX_MAP = {
     "C": "control",
     "S": "treated",
     "T": "treated",
 }
 
-# Segmentation
+# Segmentation settings
 SEGMENTATION_MODE = "auto"   # "auto" or "center_crop"
 CENTER_CROP_FRACTION = 0.82
 ERODE_BORDER_FRACTION = 0.03
 MIN_MASK_FILL_FRACTION = 0.05
 MAX_MASK_FILL_FRACTION = 0.95
 
-# Residual dirty threshold is learned from each tile's BEFORE image using
-# only a/b chromatic variation, then applied to the shift-corrected AFTER image.
+# Residual dirty threshold settings
+# Learned from each tile's BEFORE image using a/b chromatic variation only
 MIN_AB_THRESHOLD = 2.0
 BASELINE_PERCENTILE = 95
 AB_MARGIN = 0.75
@@ -52,13 +54,21 @@ SAVE_DEBUG_CROPS = True
 SAVE_OVERLAYS = True
 
 # ============================================================
-# DISCOVERY
+# SORTING / NAMING HELPERS
 # ============================================================
 
-def list_image_files(folder: Path):
-    return sorted(
-        [p for p in folder.iterdir() if p.is_file() and p.suffix in VALID_EXTENSIONS]
-    )
+def natural_tile_sort_key(tile_id: str):
+    """
+    Natural sort for IDs like C1, C2, C10, S1, S12, etc.
+    """
+    parts = re.split(r"(\d+)", str(tile_id))
+    key = []
+    for part in parts:
+        if part.isdigit():
+            key.append(int(part))
+        else:
+            key.append(part.upper())
+    return key
 
 def pairing_key(path: Path) -> str:
     """
@@ -91,7 +101,23 @@ def infer_group_from_key(key: str) -> str:
         )
     return GROUP_PREFIX_MAP[prefix]
 
+# ============================================================
+# DISCOVERY
+# ============================================================
+
+def list_image_files(folder: Path):
+    return sorted(
+        [p for p in folder.iterdir() if p.is_file() and p.suffix in VALID_EXTENSIONS]
+    )
+
 def discover_tiles_subfolders(before_dir: Path, after_dir: Path):
+    """
+    Supports:
+      before/treated/*.ORF
+      before/control/*.ORF
+      after/treated/*.ORF
+      after/control/*.ORF
+    """
     groups = ["treated", "control"]
     tiles = []
 
@@ -129,6 +155,11 @@ def discover_tiles_subfolders(before_dir: Path, after_dir: Path):
     return tiles
 
 def discover_tiles_flat(before_dir: Path, after_dir: Path):
+    """
+    Supports:
+      before/C1.ORF, before/S1.ORF, ...
+      after/C1.ORF, after/S1.ORF, ...
+    """
     before_files = {pairing_key(p): p for p in list_image_files(before_dir)}
     after_files = {pairing_key(p): p for p in list_image_files(after_dir)}
 
@@ -219,7 +250,7 @@ def center_crop_mask(h: int, w: int, frac: float):
     cw = int(round(w * frac))
     y0 = max(0, (h - ch) // 2)
     x0 = max(0, (w - cw) // 2)
-    mask[y0:y0+ch, x0:x0+cw] = 255
+    mask[y0:y0 + ch, x0:x0 + cw] = 255
     return mask
 
 def largest_reasonable_mask(gray_u8: np.ndarray):
@@ -296,8 +327,8 @@ def detect_and_crop_tile(rgb: np.ndarray):
     y0, y1 = ys.min(), ys.max()
     x0, x1 = xs.min(), xs.max()
 
-    crop = rgb[y0:y1+1, x0:x1+1]
-    crop_mask = mask[y0:y1+1, x0:x1+1]
+    crop = rgb[y0:y1 + 1, x0:x1 + 1]
+    crop_mask = mask[y0:y1 + 1, x0:x1 + 1]
 
     return crop, crop_mask
 
@@ -367,7 +398,7 @@ def score_after_against_before(
 
     corrected_after_pixels = corrected_after_lab[after_mask > 0]
 
-    # Residual "dirtyness" after removing the global shift, using only a/b
+    # Residual dirtyness after removing the global shift, using a/b only
     residual_ab = np.linalg.norm(
         corrected_after_pixels[:, 1:3] - before_median[1:3],
         axis=1
@@ -377,7 +408,7 @@ def score_after_against_before(
     residual_dirty_percent_ab = 100.0 * float(np.mean(dirty_vector))
     cleanliness_score = 100.0 - residual_dirty_percent_ab
 
-    # Tile-level median color change metrics
+    # Tile-level median change metrics
     median_deltaE00_full = ciede2000_triplets(before_median, after_median)
     median_delta_ab = ab_distance(before_median, after_median)
     median_delta_L = float(after_median[0] - before_median[0])
@@ -395,7 +426,6 @@ def score_after_against_before(
         "residual_ab_mean": round(float(np.mean(residual_ab)), 2),
         "residual_ab_p90": round(float(np.percentile(residual_ab, 90)), 2),
         "dirty_vector": dirty_vector,
-        "corrected_after_lab": corrected_after_lab,
     }
 
 # ============================================================
@@ -434,8 +464,122 @@ def save_overlay(rgb: np.ndarray, mask: np.ndarray, dirty_vector: np.ndarray, ou
     cv2.drawContours(blended, contours, -1, (0, 255, 0), 2)
     iio.imwrite(out_path, blended)
 
-def round_triplet(x):
-    return [round(float(v), 4) for v in x]
+def mean_or_blank(values):
+    return round(float(np.mean(values)), 2) if values else ""
+
+def save_human_readable_excel(path: Path, rows):
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Tile Summary"
+
+    sorted_rows = sorted(rows, key=lambda r: natural_tile_sort_key(r["tile_id"]))
+
+    headers = [
+        "Tile",
+        "Group",
+        "Median ΔE00",
+        "Median Δab",
+        "Dirty %",
+    ]
+    ws.append(headers)
+
+    # Styling
+    header_fill = PatternFill(fill_type="solid", fgColor="D9EAF7")
+    summary_fill = PatternFill(fill_type="solid", fgColor="EDEDED")
+
+    header_font = Font(name="Avenir", bold=True, size=11)
+    body_font = Font(name="Avenir", size=11)
+    summary_font = Font(name="Avenir", bold=True, size=11)
+
+    center = Alignment(horizontal="center", vertical="center")
+
+    thin_side = Side(style="thin", color="BFBFBF")
+    all_borders = Border(
+        left=thin_side,
+        right=thin_side,
+        top=thin_side,
+        bottom=thin_side,
+    )
+
+    # Header row
+    for col_idx, header in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=col_idx, value=header)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = center
+        cell.border = all_borders
+
+    # Data rows
+    for r in sorted_rows:
+        group_label = "Control" if r["group"] == "control" else "Treated"
+        ws.append([
+            r["tile_id"],
+            group_label,
+            r["median_deltaE00_full"],
+            r["median_delta_ab"],
+            r["residual_dirty_percent_ab"],
+        ])
+
+    # Apply body styling + borders to data rows
+    for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=5):
+        for cell in row:
+            cell.font = body_font
+            cell.alignment = center
+            cell.border = all_borders
+
+    # Blank row before summaries
+    ws.append([])
+    blank_row_idx = ws.max_row
+    for cell in ws[blank_row_idx]:
+        cell.border = all_borders
+        cell.font = body_font
+        cell.alignment = center
+
+    control_rows = [r for r in sorted_rows if r["group"] == "control"]
+    treated_rows = [r for r in sorted_rows if r["group"] == "treated"]
+
+    control_summary = [
+        "Control Average",
+        "Control",
+        mean_or_blank([r["median_deltaE00_full"] for r in control_rows]),
+        mean_or_blank([r["median_delta_ab"] for r in control_rows]),
+        mean_or_blank([r["residual_dirty_percent_ab"] for r in control_rows]),
+    ]
+
+    treated_summary = [
+        "Treated Average",
+        "Treated",
+        mean_or_blank([r["median_deltaE00_full"] for r in treated_rows]),
+        mean_or_blank([r["median_delta_ab"] for r in treated_rows]),
+        mean_or_blank([r["residual_dirty_percent_ab"] for r in treated_rows]),
+    ]
+
+    ws.append(control_summary)
+    ws.append(treated_summary)
+
+    # Style summary rows
+    for row_idx in [ws.max_row - 1, ws.max_row]:
+        for cell in ws[row_idx]:
+            cell.font = summary_font
+            cell.fill = summary_fill
+            cell.alignment = center
+            cell.border = all_borders
+
+    # Column widths
+    ws.column_dimensions["A"].width = 18
+    ws.column_dimensions["B"].width = 12
+    ws.column_dimensions["C"].width = 14
+    ws.column_dimensions["D"].width = 14
+    ws.column_dimensions["E"].width = 12
+
+    # Format numeric columns
+    for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=3, max_col=5):
+        for cell in row:
+            if isinstance(cell.value, (int, float)):
+                cell.number_format = "0.00"
+
+    ws.freeze_panes = "A2"
+    wb.save(path)
 
 # ============================================================
 # MAIN
@@ -451,6 +595,8 @@ def main():
     if not tiles:
         raise ValueError("No matched tile pairs found.")
 
+    tiles = sorted(tiles, key=lambda t: natural_tile_sort_key(t["tile_id"]))
+
     print("\nDiscovered tiles:")
     for t in tiles:
         print(
@@ -459,7 +605,6 @@ def main():
         )
 
     per_tile_rows = []
-    processed = []
 
     print("\nProcessing tiles...\n")
 
@@ -523,14 +668,6 @@ def main():
         }
         per_tile_rows.append(row)
 
-        processed.append({
-            "tile_id": tile_id,
-            "group": group,
-            "after_crop": after_crop,
-            "after_mask": after_mask,
-            "dirty_vector": result["dirty_vector"],
-        })
-
         if SAVE_DEBUG_CROPS:
             iio.imwrite(DEBUG_DIR / f"{tile_id}_before_crop.png", (before_crop * 255).astype(np.uint8))
             iio.imwrite(DEBUG_DIR / f"{tile_id}_after_crop.png", (after_crop * 255).astype(np.uint8))
@@ -549,12 +686,16 @@ def main():
             f"dirty={result['residual_dirty_percent_ab']}%"
         )
 
+    per_tile_rows = sorted(per_tile_rows, key=lambda r: natural_tile_sort_key(r["tile_id"]))
+
     # Group summaries
     group_summary_rows = []
-    groups = sorted(set(r["group"] for r in per_tile_rows))
+    groups = ["control", "treated"]
 
     for group in groups:
         rows = [r for r in per_tile_rows if r["group"] == group]
+        if not rows:
+            continue
 
         de_vals = np.array([r["median_deltaE00_full"] for r in rows], dtype=float)
         dab_vals = np.array([r["median_delta_ab"] for r in rows], dtype=float)
@@ -577,6 +718,7 @@ def main():
     # Save outputs
     save_csv(OUTPUT_DIR / "per_tile_results.csv", per_tile_rows)
     save_csv(OUTPUT_DIR / "group_summary.csv", group_summary_rows)
+    save_human_readable_excel(OUTPUT_DIR / "tile_summary.xlsx", per_tile_rows)
 
     summary_json = {
         "tiles": per_tile_rows,
@@ -588,6 +730,7 @@ def main():
     print("\nDone.")
     print(f"Saved: {OUTPUT_DIR / 'per_tile_results.csv'}")
     print(f"Saved: {OUTPUT_DIR / 'group_summary.csv'}")
+    print(f"Saved: {OUTPUT_DIR / 'tile_summary.xlsx'}")
     print(f"Saved: {OUTPUT_DIR / 'summary.json'}")
     print(f"Debug images: {DEBUG_DIR}")
 

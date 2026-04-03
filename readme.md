@@ -81,3 +81,32 @@ after/
     C1.ORF
     C2.ORF
     C3.ORF
+
+### Option 2: flat structure
+before/
+  S1.ORF
+  S2.ORF
+  S3.ORF
+  C1.ORF
+  C2.ORF
+  C3.ORF
+
+after/
+  S1.ORF
+  S2.ORF
+  S3.ORF
+  C1.ORF
+  C2.ORF
+  C3.ORF
+```
+
+## Next Steps & Possible Improvements
+
+### Use per-pixel fouling amount instead of binary threshold
+The binary fouled/not fouled approximation provides a good crude approximation, but is limited in accuracy, especially as more fouling accumulates and layers. 
+
+### Use a per-image fouling baseline
+Currently we use the original set of images and correct for color variation algorithmically to set a baseline for fouling, however a non-fouled subject alongside each tile may provide a more accurate baseline.
+
+### Experiment with algae spectra
+The Lab colorspace works well so far for ignoring non-fouling-related blemishes on the tile, but especially as we explore fouling amount per pixel, we may want to make sure we're only counting specific spectra reflected by algae.
