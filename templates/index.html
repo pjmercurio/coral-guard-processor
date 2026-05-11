@@ -1,0 +1,942 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Coral Guard Tile Scorer</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500;1,400&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,500;0,9..40,700;1,9..40,300&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --blue:      #1a6bb5;
+    --blue-lt:   #80b5f9;
+    --blue-dk:   #0f3d66;
+    --ink:       #0e1a24;
+    --ink-60:    rgba(14,26,36,0.6);
+    --ink-20:    rgba(14,26,36,0.12);
+    --white:     #ffffff;
+    --surface:   #f5f7fa;
+    --border:    #dde3eb;
+    --green:     #2ca02c;
+    --red:       #d62728;
+    --mono:      'DM Mono', monospace;
+    --sans:      'DM Sans', sans-serif;
+    --radius:    10px;
+    --shadow:    0 2px 16px rgba(14,26,36,0.08);
+    --shadow-lg: 0 8px 40px rgba(14,26,36,0.18);
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: var(--sans);
+    background: var(--surface);
+    color: var(--ink);
+    min-height: 100vh;
+    padding-bottom: 120px;
+    user-select: none;
+  }
+
+  /* ── Header ─────────────────────────────────────────────────────────── */
+  header {
+    background: var(--ink);
+    color: var(--white);
+    padding: 0 48px;
+    height: 64px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.25);
+  }
+  header h1 {
+    font-size: 15px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  header h1 span {
+    color: var(--blue-lt);
+    font-style: italic;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .header-meta {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: rgba(255,255,255,0.4);
+    letter-spacing: 0.06em;
+  }
+
+  /* ── Main layout ─────────────────────────────────────────────────────── */
+  main { max-width: 1200px; margin: 0 auto; padding: 40px 32px; }
+
+  .section-label {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-60);
+    margin-bottom: 12px;
+  }
+
+  /* ── Drop zone ───────────────────────────────────────────────────────── */
+  .drop-area {
+    border: 2px dashed var(--border);
+    border-radius: var(--radius);
+    background: var(--white);
+    padding: 56px 32px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s, transform 0.15s;
+    position: relative;
+  }
+  .drop-area:hover, .drop-area.dragover {
+    border-color: var(--blue);
+    background: #f0f6ff;
+    transform: scale(1.005);
+  }
+  .drop-area.dragover { box-shadow: 0 0 0 4px var(--blue-lt); }
+  .drop-icon {
+    width: 52px; height: 52px;
+    background: var(--blue-lt);
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 20px;
+  }
+  .drop-icon svg { width: 24px; height: 24px; stroke: var(--blue-dk); fill: none; }
+  .drop-area h2  { font-size: 18px; font-weight: 500; margin-bottom: 8px; }
+  .drop-area p   { font-size: 14px; color: var(--ink-60); margin-bottom: 20px; }
+  .drop-area input[type=file] {
+    position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%;
+  }
+  .btn-select {
+    display: inline-block;
+    background: var(--blue); color: white;
+    font-family: var(--sans); font-size: 13px; font-weight: 500;
+    padding: 9px 22px; border-radius: 6px; border: none;
+    pointer-events: none; letter-spacing: 0.02em;
+  }
+
+  /* Excel badges row */
+  .xlsx-badges {
+    display: flex; flex-wrap: wrap; gap: 8px;
+    justify-content: center; margin-top: 14px; min-height: 0;
+  }
+  .xlsx-badge {
+    font-family: var(--mono); font-size: 11px;
+    background: #edf4ff; border: 1px solid var(--blue-lt);
+    color: var(--blue); padding: 4px 12px; border-radius: 20px;
+    display: flex; align-items: center; gap: 6px;
+    animation: slideIn 0.2s ease;
+  }
+  .xlsx-badge svg { width: 11px; height: 11px; stroke: var(--blue); fill: none; flex-shrink: 0; }
+  .xlsx-badge .remove-xlsx {
+    cursor: pointer; opacity: 0.5; font-size: 14px; line-height: 1; margin-left: 2px;
+  }
+  .xlsx-badge .remove-xlsx:hover { opacity: 1; }
+
+  /* ── File queue ──────────────────────────────────────────────────────── */
+  #file-queue { margin-top: 20px; display: none; }
+  .file-list {
+    background: var(--white); border: 1px solid var(--border);
+    border-radius: var(--radius); overflow: hidden;
+  }
+  .file-row {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 18px; border-bottom: 1px solid var(--border);
+    font-size: 13px; animation: slideIn 0.2s ease;
+  }
+  .file-row:last-child { border-bottom: none; }
+  @keyframes slideIn {
+    from { opacity: 0; transform: translateY(-6px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .tile-id {
+    font-family: var(--mono); font-size: 12px; font-weight: 500;
+    background: var(--surface); padding: 3px 8px;
+    border-radius: 4px; color: var(--blue-dk);
+  }
+  .file-name   { color: var(--ink-60); font-size: 12px; flex: 1; }
+  .file-status { font-size: 11px; }
+  .status-ok      { color: var(--green); }
+  .status-missing { color: var(--red); }
+
+  .queue-actions { display: flex; gap: 12px; margin-top: 16px; align-items: center; }
+  .btn-run {
+    background: var(--blue); color: white; border: none;
+    border-radius: 6px; padding: 11px 28px;
+    font-family: var(--sans); font-size: 14px; font-weight: 600;
+    cursor: pointer; letter-spacing: 0.02em;
+    transition: background 0.15s, transform 0.1s;
+  }
+  .btn-run:hover    { background: var(--blue-dk); transform: translateY(-1px); }
+  .btn-run:disabled { background: var(--border); color: var(--ink-60); cursor: not-allowed; transform: none; }
+  .btn-clear {
+    background: none; border: 1px solid var(--border); border-radius: 6px;
+    padding: 10px 20px; font-family: var(--sans); font-size: 13px;
+    color: var(--ink-60); cursor: pointer; transition: border-color 0.15s;
+  }
+  .btn-clear:hover { border-color: var(--ink-60); color: var(--ink); }
+
+  /* ── Before chip list ────────────────────────────────────────────────── */
+  .before-panel {
+    margin-top: 32px; background: var(--white);
+    border: 1px solid var(--border); border-radius: var(--radius); padding: 20px 24px;
+  }
+  .before-panel h3 { font-size: 13px; font-weight: 600; margin-bottom: 14px; }
+  .tile-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip {
+    font-family: var(--mono); font-size: 11px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 20px; padding: 4px 12px; color: var(--ink-60);
+  }
+  .chip.matched { border-color: var(--blue-lt); color: var(--blue); background: #d3e4fd; }
+
+  /* ── Progress ────────────────────────────────────────────────────────── */
+  #progress-area {
+    display: none; margin-top: 32px; background: var(--white);
+    border: 1px solid var(--border); border-radius: var(--radius); padding: 24px 28px;
+  }
+  .progress-label { font-size: 13px; color: var(--ink-60); margin-bottom: 12px; }
+  .progress-bar-wrap { background: var(--surface); border-radius: 4px; height: 6px; overflow: hidden; }
+  .progress-bar-fill {
+    height: 100%; background: var(--blue); border-radius: 4px;
+    width: 0%; transition: width 0.4s ease;
+  }
+  .progress-log {
+    margin-top: 14px; font-family: var(--mono); font-size: 11px;
+    color: var(--ink-60); max-height: 80px; overflow-y: auto;
+  }
+
+  /* ── Results ─────────────────────────────────────────────────────────── */
+  #results-area { display: none; margin-top: 40px; }
+
+  .results-header {
+    display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px;
+  }
+  .results-header h2 { font-size: 20px; font-weight: 600; }
+  .btn-save {
+    background: var(--green); color: white; border: none;
+    border-radius: 6px; padding: 11px 24px;
+    font-family: var(--sans); font-size: 13px; font-weight: 600;
+    cursor: pointer; display: flex; align-items: center; gap: 8px; transition: background 0.15s;
+  }
+  .btn-save:hover { background: #229922; }
+  .btn-save svg   { width: 16px; height: 16px; stroke: white; fill: none; }
+  .save-confirm {
+    font-family: var(--mono); font-size: 11px; color: var(--green); display: none; margin-top: 6px;
+  }
+
+  /* ── Collapsible ─────────────────────────────────────────────────────── */
+  .collapsible-section {
+    background: var(--white); border: 1px solid var(--border);
+    border-radius: var(--radius); margin-bottom: 16px; overflow: hidden;
+  }
+  .collapsible-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 15px 22px; cursor: pointer; transition: background 0.15s;
+  }
+  .collapsible-header:hover { background: var(--surface); }
+  .collapsible-title { display: flex; align-items: center; gap: 12px; }
+  .collapsible-title h3 { font-size: 14px; font-weight: 600; }
+  .tile-count-badge {
+    font-family: var(--mono); font-size: 11px;
+    background: var(--blue-lt); color: var(--blue-dk); padding: 2px 9px; border-radius: 10px;
+  }
+  .chevron {
+    width: 18px; height: 18px; stroke: var(--ink-60); fill: none;
+    transition: transform 0.25s ease; flex-shrink: 0;
+  }
+  .collapsible-header.open .chevron { transform: rotate(180deg); }
+  .collapsible-body { padding: 0 20px 20px; display: none; }
+  .collapsible-body.open { display: block; }
+
+  /* ── Tile grid ───────────────────────────────────────────────────────── */
+  .tile-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 12px;
+  }
+  .tile-card {
+    background: var(--white); border: 1px solid var(--border);
+    border-radius: 8px; overflow: hidden; box-shadow: var(--shadow);
+    animation: fadeUp 0.3s ease both; transition: transform 0.15s, box-shadow 0.15s;
+  }
+  .tile-card:not(.error-card) { cursor: pointer; }
+  .tile-card:not(.error-card):hover {
+    transform: translateY(-2px); box-shadow: 0 6px 24px rgba(14,26,36,0.14);
+  }
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(10px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .tile-card.error-card { border-color: #fbb; }
+  .tile-card-header {
+    background: var(--ink); color: white; padding: 7px 10px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .tile-card-header.slips { background: var(--blue); }
+  .tile-card-header .tile-label {
+    font-family: var(--mono); font-size: 12px; font-weight: 500; flex: 1;
+  }
+  .group-badge {
+    font-family: var(--mono); font-size: 9px;
+    background: rgba(255,255,255,0.2); padding: 2px 6px; border-radius: 8px; letter-spacing: 0.05em;
+  }
+  .tile-overlay {
+    width: 100%; aspect-ratio: 4/3; object-fit: cover; display: block; background: var(--surface);
+  }
+  .tile-metrics { padding: 8px 10px; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px; }
+  .metric-item   { text-align: center; }
+  .metric-value  { font-family: var(--mono); font-size: 12px; font-weight: 500; }
+  .metric-label  { font-size: 9px; color: var(--ink-60); margin-top: 1px; letter-spacing: 0.03em; }
+  .tile-error-msg {
+    padding: 12px; font-family: var(--mono); font-size: 10px;
+    color: var(--red); white-space: pre-wrap; word-break: break-word;
+  }
+
+  /* ── Lightbox ────────────────────────────────────────────────────────── */
+  #lightbox {
+    display: none; position: fixed; inset: 0; z-index: 500;
+    background: rgba(10,16,22,0.82); backdrop-filter: blur(6px);
+    align-items: center; justify-content: center; animation: lbIn 0.18s ease;
+  }
+  #lightbox.active { display: flex; }
+  @keyframes lbIn { from { opacity: 0; } to { opacity: 1; } }
+  .lb-inner {
+    position: relative; max-width: 88vw; max-height: 88vh;
+    animation: lbScale 0.2s cubic-bezier(0.34,1.56,0.64,1);
+  }
+  @keyframes lbScale {
+    from { transform: scale(0.88); opacity: 0; }
+    to   { transform: scale(1);    opacity: 1; }
+  }
+  #lb-img {
+    display: block; max-width: 100%; max-height: 80vh;
+    border-radius: 10px; box-shadow: 0 24px 80px rgba(0,0,0,0.55); object-fit: contain;
+  }
+  .lb-caption {
+    margin-top: 14px; text-align: center;
+    color: rgba(255,255,255,0.75); font-family: var(--mono); font-size: 12px; letter-spacing: 0.06em;
+  }
+  .lb-metrics { margin-top: 8px; display: flex; justify-content: center; gap: 24px; }
+  .lb-metric .val { font-family: var(--mono); font-size: 15px; font-weight: 500; color: white; }
+  .lb-metric .lbl { font-size: 10px; color: rgba(255,255,255,0.5); margin-top: 2px; letter-spacing: 0.04em; }
+  .lb-close {
+    position: absolute; top: -14px; right: -14px;
+    width: 28px; height: 28px; background: rgba(0,0,0,0.75);
+    outline: 1px solid rgba(255,255,255,0.5); border: none; border-radius: 50%;
+    color: white; font-size: 18px; line-height: 28px;
+    cursor: pointer; text-align: center; transition: background 0.15s;
+  }
+  .lb-close:hover { background: rgba(255,255,255,0.28); }
+
+  /* Arrow nav buttons */
+  .lb-arrow {
+    position: fixed; top: 50%; transform: translateY(-50%);
+    width: 44px; height: 44px; background: rgba(0,0,0,0.5);
+    outline: 1px solid rgba(255,255,255,0.2); border: none; border-radius: 50%;
+    color: white; font-size: 20px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: background 0.15s, opacity 0.15s;
+    z-index: 10;
+  }
+  .lb-arrow:hover { background: rgba(255,255,255,0.18); }
+  .lb-arrow:disabled { opacity: 0.15; cursor: default; }
+  .lb-arrow:disabled:hover { background: rgba(0,0,0,0.5); }
+  #lb-prev { left: 24px; }
+  #lb-next { right: 24px; }
+  .lb-arrow svg { width: 20px; height: 20px; stroke: white; fill: none; stroke-width: 2; }
+
+  /* Tile position indicator */
+  .lb-position {
+    margin-top: 6px; text-align: center;
+    font-family: var(--mono); font-size: 10px; color: rgba(255,255,255,0.35);
+    letter-spacing: 0.08em;
+  }
+
+  /* ── Charts ──────────────────────────────────────────────────────────── */
+  .chart-img {
+    width: 100%; border-radius: var(--radius);
+    box-shadow: var(--shadow); border: 1px solid var(--border);
+    background: white; display: block; margin-bottom: 12px;
+  }
+
+  @media (max-width: 640px) {
+    main { padding: 24px 16px; }
+    header { padding: 0 20px; }
+    .tile-grid { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
+    .lb-arrow { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Coral Guard Tile Scorer ⬜ 🟩 📊</h1>
+  <div class="header-meta">Created By: Paul Mercurio & Rebecca Peters</div>
+</header>
+
+<main>
+
+  <!-- Drop Zone -->
+  <div class="section-label">After Images — Drag & Drop</div>
+  <div class="drop-area" id="drop-area">
+    <input type="file" id="file-input" multiple accept=".orf,.ORF,.xlsx">
+    <div class="drop-icon">
+      <svg viewBox="0 0 24 24" stroke-width="1.8">
+        <path d="M12 15V3m0 12-4-4m4 4 4-4" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M2 17v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2" stroke-linecap="round"/>
+      </svg>
+    </div>
+    <h2>Drop .ORF images or .XLSX spreadsheets here</h2>
+    <p>Each file will be matched to its baseline in the 'before' folder by filename. Reflectance files should include date in the filename and be <strong>.xlsx</strong> format.</p>
+    <span class="btn-select">Browse files...</span>
+    <div class="xlsx-badges" id="xlsx-badges"></div>
+  </div>
+
+  <!-- File Queue -->
+  <div id="file-queue">
+    <div class="file-list" id="file-list"></div>
+    <div class="queue-actions">
+      <button class="btn-run" id="btn-run" disabled>Run Analysis!</button>
+      <button class="btn-clear" id="btn-clear">Clear</button>
+      <span id="match-summary" style="font-size:13px; color: var(--ink-60);"></span>
+    </div>
+  </div>
+
+  <!-- Before tiles available -->
+  {% if before_tiles %}
+  <div class="before-panel">
+    <h3>Baseline tiles available in the 'before' folder</h3>
+    <div class="tile-chips" id="before-chips">
+      {% for tile in before_tiles %}
+      <span class="chip" data-tile="{{ tile }}">{{ tile }}</span>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Progress -->
+  <div id="progress-area">
+    <div class="progress-label" id="progress-label">Processing…</div>
+    <div class="progress-bar-wrap"><div class="progress-bar-fill" id="progress-fill"></div></div>
+    <div class="progress-log" id="progress-log"></div>
+  </div>
+
+  <!-- Results -->
+  <div id="results-area">
+    <div class="results-header">
+      <h2>Results</h2>
+      <div style="display: flex; flex-direction: column; align-items: flex-end;">
+        <button class="btn-save" id="btn-save">
+          <svg viewBox="0 0 24 24" stroke-width="1.8">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" stroke-linecap="round"/>
+            <polyline points="7 10 12 15 17 10" stroke-linecap="round" stroke-linejoin="round"/>
+            <line x1="12" y1="15" x2="12" y2="3" stroke-linecap="round"/>
+          </svg>
+          Save to Disk
+        </button>
+        <div class="save-confirm" id="save-confirm"></div>
+      </div>
+    </div>
+
+    <!-- Collapsible: Individual Tile Results -->
+    <div class="collapsible-section" id="tile-collapsible" style="display:none;">
+      <div class="collapsible-header open" data-body="tile-section-body">
+        <div class="collapsible-title">
+          <h3>Individual Tile Results</h3>
+          <span class="tile-count-badge" id="tile-count">0 tiles</span>
+        </div>
+        <svg class="chevron" viewBox="0 0 24 24" stroke-width="2">
+          <polyline points="18 15 12 9 6 15" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+      <div class="collapsible-body open" id="tile-section-body">
+        <div class="tile-grid" id="tile-grid"></div>
+      </div>
+    </div>
+
+    <!-- Collapsible: Summary Charts -->
+    <div class="collapsible-section" id="scoring-charts-area" style="display:none;">
+      <div class="collapsible-header open" data-body="scoring-charts-body">
+        <div class="collapsible-title"><h3>Tile Image Summary Charts</h3></div>
+        <svg class="chevron" viewBox="0 0 24 24" stroke-width="2">
+          <polyline points="18 15 12 9 6 15" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+      <div class="collapsible-body open" id="scoring-charts-body">
+        <img id="chart-bar"      class="chart-img" style="display:none" alt="Group comparison">
+        <img id="chart-per-tile" class="chart-img" style="display:none" alt="Per-tile results">
+      </div>
+    </div>
+
+    <!-- Collapsible: Reflectance Analysis (single timepoint) -->
+    <div class="collapsible-section" id="reflectance-single-area" style="display:none;">
+      <div class="collapsible-header open" data-body="reflectance-single-body">
+        <div class="collapsible-title"><h3>Reflectance Analysis</h3></div>
+        <svg class="chevron" viewBox="0 0 24 24" stroke-width="2">
+          <polyline points="18 15 12 9 6 15" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+      <div class="collapsible-body open" id="reflectance-single-body">
+        <img id="chart-reflectance-single" class="chart-img" alt="Reflectance spectra">
+      </div>
+    </div>
+
+    <!-- Collapsible: Reflectance Analysis (multi timepoint) -->
+    <div class="collapsible-section" id="reflectance-multi-area" style="display:none;">
+      <div class="collapsible-header open" data-body="reflectance-multi-body">
+        <div class="collapsible-title"><h3>Reflectance Analysis — Multi-Timepoint</h3></div>
+        <svg class="chevron" viewBox="0 0 24 24" stroke-width="2">
+          <polyline points="18 15 12 9 6 15" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+      <div class="collapsible-body open" id="reflectance-multi-body">
+        <img id="chart-reflectance-spectra" class="chart-img" alt="Reflectance spectra over time">
+        <img id="chart-reflectance-675"     class="chart-img" alt="675nm over time">
+      </div>
+    </div>
+
+  </div><!-- /results-area -->
+
+</main>
+
+<!-- Lightbox -->
+<div id="lightbox">
+  <button class="lb-arrow" id="lb-prev" title="Previous tile (←)" disabled>
+    <svg viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </button>
+  <div class="lb-inner">
+    <button class="lb-close" id="lb-close" title="Close (Esc)">×</button>
+    <img id="lb-img" src="" alt="">
+    <div class="lb-caption"  id="lb-caption"></div>
+    <div class="lb-metrics"  id="lb-metrics"></div>
+    <div class="lb-position" id="lb-position"></div>
+  </div>
+  <button class="lb-arrow" id="lb-next" title="Next tile (→)" disabled>
+    <svg viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </button>
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+let stagedFiles  = [];
+let stagedExcels = [];
+
+const beforeTiles = Array.from(document.querySelectorAll('.chip'))
+                         .map(c => c.dataset.tile.toLowerCase());
+
+// ── Drop zone ──────────────────────────────────────────────────────────────
+const dropArea  = document.getElementById('drop-area');
+const fileInput = document.getElementById('file-input');
+
+['dragenter','dragover'].forEach(e =>
+  dropArea.addEventListener(e, ev => { ev.preventDefault(); dropArea.classList.add('dragover'); })
+);
+['dragleave','drop'].forEach(e =>
+  dropArea.addEventListener(e, ev => { ev.preventDefault(); dropArea.classList.remove('dragover'); })
+);
+dropArea.addEventListener('drop',    ev => addFiles(ev.dataTransfer.files));
+fileInput.addEventListener('change', ()  => addFiles(fileInput.files));
+
+function addFiles(fileList) {
+  Array.from(fileList).forEach(f => {
+    if (f.name.toLowerCase().endsWith('.xlsx')) {
+      if (!stagedExcels.find(x => x.name === f.name)) stagedExcels.push(f);
+      return;
+    }
+    if (!f.name.toLowerCase().endsWith('.orf')) return;
+    if (stagedFiles.find(s => s.name === f.name)) return;
+    stagedFiles.push(f);
+  });
+  renderXlsxBadges();
+  renderQueue();
+}
+
+function renderXlsxBadges() {
+  const container = document.getElementById('xlsx-badges');
+  container.innerHTML = '';
+  stagedExcels.forEach((f, i) => {
+    const badge = document.createElement('span');
+    badge.className = 'xlsx-badge';
+    badge.innerHTML = `
+      <svg viewBox="0 0 24 24" stroke-width="2">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+        <polyline points="14 2 14 8 20 8"/>
+      </svg>
+      ${f.name}
+      <span class="remove-xlsx" data-idx="${i}" title="Remove">×</span>`;
+    container.appendChild(badge);
+  });
+  container.querySelectorAll('.remove-xlsx').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      stagedExcels.splice(parseInt(btn.dataset.idx), 1);
+      renderXlsxBadges();
+      renderQueue();
+    });
+  });
+}
+
+function renderQueue() {
+  const queue   = document.getElementById('file-queue');
+  const list    = document.getElementById('file-list');
+  const chips   = document.querySelectorAll('.chip');
+  const summary = document.getElementById('match-summary');
+  const btn     = document.getElementById('btn-run');
+
+  const hasOrfs  = stagedFiles.length > 0;
+  const hasExcel = stagedExcels.length > 0;
+
+  if (!hasOrfs && !hasExcel) { queue.style.display = 'none'; return; }
+  queue.style.display = 'block';
+  list.innerHTML = '';
+
+  let matched = 0;
+  if (hasOrfs) {
+    stagedFiles.forEach(f => {
+      const stem     = f.name.replace(/\.orf$/i, '').toLowerCase();
+      const hasMatch = beforeTiles.includes(stem);
+      if (hasMatch) matched++;
+      chips.forEach(c => {
+        if (c.dataset.tile.toLowerCase() === stem) c.classList.add('matched');
+      });
+      const row = document.createElement('div');
+      row.className = 'file-row';
+      row.innerHTML = `
+        <span class="tile-id">${stem.toUpperCase()}</span>
+        <span class="file-name">${f.name}</span>
+        <span class="file-status ${hasMatch ? 'status-ok' : 'status-missing'}">
+          ${hasMatch ? '✓ baseline found' : '✗ no baseline'}
+        </span>`;
+      list.appendChild(row);
+    });
+    const fileWord = stagedFiles.length === 1 ? 'file' : 'files';
+    summary.textContent = `${matched} of ${stagedFiles.length} ${fileWord} matched`;
+    btn.disabled = (matched === 0 && !hasExcel);
+  } else {
+    summary.textContent = `${stagedExcels.length} reflectance file${stagedExcels.length > 1 ? 's' : ''} ready`;
+    btn.disabled = false;
+  }
+  // btn.textContent = hasOrfs ? 'Run Scoring' : 'Analyse Reflectance';
+}
+
+document.getElementById('btn-clear').onclick = () => {
+  stagedFiles  = [];
+  stagedExcels = [];
+  document.querySelectorAll('.chip').forEach(c => c.classList.remove('matched'));
+  document.getElementById('file-queue').style.display    = 'none';
+  document.getElementById('results-area').style.display  = 'none';
+  document.getElementById('progress-area').style.display = 'none';
+  document.getElementById('xlsx-badges').innerHTML       = '';
+  document.getElementById('btn-run').textContent         = 'Run Analysis!';
+  fileInput.value = '';
+};
+
+// ── Generic collapsible (works for any section) ────────────────────────────
+document.addEventListener('click', e => {
+  const header = e.target.closest('.collapsible-header');
+  if (!header) return;
+  const bodyId = header.dataset.body;
+  if (!bodyId) return;
+  const body   = document.getElementById(bodyId);
+  const isOpen = header.classList.contains('open');
+  header.classList.toggle('open', !isOpen);
+  body.classList.toggle('open', !isOpen);
+});
+
+// ── Run ────────────────────────────────────────────────────────────────────
+document.getElementById('btn-run').onclick = runScoring;
+
+async function runScoring() {
+  const btn      = document.getElementById('btn-run');
+  const progress = document.getElementById('progress-area');
+  const fill     = document.getElementById('progress-fill');
+  const label    = document.getElementById('progress-label');
+  const log      = document.getElementById('progress-log');
+
+  btn.disabled = true;
+  btn.textContent = 'Analyzing...';
+
+  ['results-area','reflectance-single-area','reflectance-multi-area',
+   'scoring-charts-area','tile-collapsible'].forEach(id => {
+    document.getElementById(id).style.display = 'none';
+  });
+
+  progress.style.display = 'block';
+  log.textContent = '';
+  fill.style.width = '5%';
+  label.textContent = 'Starting…';
+
+  // Tile scoring
+  if (stagedFiles.length > 0) {
+    label.textContent = 'Uploading tile images…';
+    const formData = new FormData();
+    stagedFiles.forEach(f => formData.append('files', f));
+    const fileWord = stagedFiles.length === 1 ? 'file' : 'files';
+    logLine('Sending ' + stagedFiles.length + ' ' + fileWord + ' to server…');
+    fill.style.width = '15%';
+    try {
+      const res  = await fetch('/process', { method: 'POST', body: formData });
+      fill.style.width = '60%';
+      label.textContent = 'Scoring tiles…';
+      logLine('Tile processing complete. Rendering results…');
+      const data = await res.json();
+      renderResults(data);
+      logLine('Tile results rendered.');
+    } catch (err) {
+      label.textContent = 'Tile scoring error';
+      logLine('ERROR: ' + err.message);
+      console.error(err);
+    }
+  }
+
+  // Reflectance
+  if (stagedExcels.length > 0) {
+    label.textContent = 'Processing reflectance data…';
+    logLine(`Sending ${stagedExcels.length} reflectance file(s)…`);
+    const rfData = new FormData();
+    stagedExcels.forEach(f => rfData.append('files', f));
+    try {
+      const rfRes  = await fetch('/process_reflectance', { method: 'POST', body: rfData });
+      const rfJson = await rfRes.json();
+      fill.style.width = '100%';
+      document.getElementById('results-area').style.display = 'block';
+
+      if (rfJson.error) {
+        logLine('Reflectance error: ' + rfJson.error);
+      } else if (rfJson.mode === 'single' && rfJson.chart) {
+        document.getElementById('chart-reflectance-single').src =
+          'data:image/png;base64,' + rfJson.chart;
+        document.getElementById('reflectance-single-area').style.display = 'block';
+        logLine('Reflectance chart ready.');
+      } else if (rfJson.mode === 'multi') {
+        if (rfJson.spectra) {
+          document.getElementById('chart-reflectance-spectra').src =
+            'data:image/png;base64,' + rfJson.spectra;
+        }
+        if (rfJson.chl675) {
+          document.getElementById('chart-reflectance-675').src =
+            'data:image/png;base64,' + rfJson.chl675;
+        }
+        document.getElementById('reflectance-multi-area').style.display = 'block';
+        logLine(`Multi-timepoint reflectance charts ready (${stagedExcels.length} files).`);
+      }
+    } catch (err) {
+      logLine('Reflectance fetch failed: ' + err.message);
+    }
+  }
+
+  fill.style.width  = '100%';
+  label.textContent = 'Done ✓';
+  btn.disabled = false;
+  btn.textContent = 'Re-Run Analysis!';
+  document.getElementById('results-area').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function logLine(msg) {
+  const log = document.getElementById('progress-log');
+  log.textContent += msg + '\n';
+  log.scrollTop = log.scrollHeight;
+}
+
+// ── Render tile results ────────────────────────────────────────────────────
+const tileDataStore = {};
+let   tileOrder     = [];   // ordered list of tile IDs for arrow navigation
+let   currentTileIdx = -1;
+
+function renderResults(data) {
+  const grid = document.getElementById('tile-grid');
+  const { results = [], charts = {} } = data;
+
+  document.getElementById('results-area').style.display = 'block';
+  grid.innerHTML = '';
+  tileOrder = [];
+
+  const successCount = results.filter(r => !r.error).length;
+  document.getElementById('tile-count').textContent =
+    `${successCount} tile${successCount !== 1 ? 's' : ''}`;
+
+  if (successCount > 0 || results.some(r => r.error)) {
+    document.getElementById('tile-collapsible').style.display = 'block';
+  }
+
+  results.forEach((r, i) => {
+    const isSlips = r.tile.toUpperCase().startsWith('S');
+    const card    = document.createElement('div');
+    card.className = `tile-card${r.error ? ' error-card' : ''}`;
+    card.style.animationDelay = `${i * 0.04}s`;
+
+    if (r.error) {
+      card.innerHTML = `
+        <div class="tile-card-header ${isSlips ? 'slips' : ''}">
+          <span class="tile-label">${r.tile}</span>
+          <span class="group-badge">${isSlips ? 'SLIPS' : 'CONTROL'}</span>
+        </div>
+        <div class="tile-error-msg">⚠ ${r.error}</div>`;
+    } else {
+      const m   = r.metrics;
+      const src = 'data:image/png;base64,' + r.overlay;
+      tileDataStore[r.tile] = { src, metrics: m, isSlips };
+      tileOrder.push(r.tile);   // track render order
+
+      card.innerHTML = `
+        <div class="tile-card-header ${isSlips ? 'slips' : ''}">
+          <span class="tile-label">${r.tile}</span>
+          <span class="group-badge">${isSlips ? 'SLIPS' : 'CONTROL'}</span>
+        </div>
+        <img class="tile-overlay" src="${src}" alt="Overlay ${r.tile}" loading="lazy">
+        <div class="tile-metrics">
+          <div class="metric-item">
+            <div class="metric-value">${m['Dirty %'].toFixed(1)}</div>
+            <div class="metric-label">Dirty %</div>
+          </div>
+          <div class="metric-item">
+            <div class="metric-value">${m['Median ΔE00'].toFixed(2)}</div>
+            <div class="metric-label">ΔE₀₀</div>
+          </div>
+          <div class="metric-item">
+            <div class="metric-value">${m['Median Δab'].toFixed(2)}</div>
+            <div class="metric-label">Δab</div>
+          </div>
+        </div>`;
+      card.addEventListener('click', () => openLightbox(r.tile));
+    }
+    grid.appendChild(card);
+  });
+
+  if (charts.bar) {
+    const el = document.getElementById('chart-bar');
+    el.src = 'data:image/png;base64,' + charts.bar;
+    el.style.display = 'block';
+    document.getElementById('scoring-charts-area').style.display = 'block';
+  }
+  if (charts.per_tile) {
+    const el = document.getElementById('chart-per-tile');
+    el.src = 'data:image/png;base64,' + charts.per_tile;
+    el.style.display = 'block';
+  }
+}
+
+// ── Lightbox ───────────────────────────────────────────────────────────────
+const lightbox = document.getElementById('lightbox');
+
+function openLightbox(tileId) {
+  const d = tileDataStore[tileId];
+  if (!d) return;
+
+  currentTileIdx = tileOrder.indexOf(tileId);
+
+  document.getElementById('lb-img').src = d.src;
+  document.getElementById('lb-caption').textContent =
+    `${tileId}  ·  ${d.isSlips ? 'SLIPS' : 'Control'}`;
+  const m = d.metrics;
+  document.getElementById('lb-metrics').innerHTML = `
+    <div class="lb-metric">
+      <div class="val">${m['Dirty %'].toFixed(2)}</div>
+      <div class="lbl">Dirty %</div>
+    </div>
+    <div class="lb-metric">
+      <div class="val">${m['Median ΔE00'].toFixed(2)}</div>
+      <div class="lbl">Median ΔE₀₀</div>
+    </div>
+    <div class="lb-metric">
+      <div class="val">${m['Median Δab'].toFixed(2)}</div>
+      <div class="lbl">Median Δab</div>
+    </div>`;
+
+  updateLightboxNav();
+  lightbox.classList.add('active');
+  document.body.style.overflow = 'hidden';
+}
+
+function updateLightboxNav() {
+  const total = tileOrder.length;
+  document.getElementById('lb-prev').disabled = (currentTileIdx <= 0);
+  document.getElementById('lb-next').disabled = (currentTileIdx >= total - 1);
+  if (total > 0) {
+    document.getElementById('lb-position').textContent =
+      `${currentTileIdx + 1} / ${total}`;
+  }
+}
+
+function navigateLightbox(delta) {
+  const next = currentTileIdx + delta;
+  if (next < 0 || next >= tileOrder.length) return;
+  currentTileIdx = next;
+  openLightboxAtIndex(currentTileIdx);
+}
+
+function openLightboxAtIndex(idx) {
+  const tileId = tileOrder[idx];
+  const d = tileDataStore[tileId];
+  if (!d) return;
+
+  document.getElementById('lb-img').src = d.src;
+  document.getElementById('lb-caption').textContent =
+    `${tileId}  ·  ${d.isSlips ? 'SLIPS' : 'Control'}`;
+  const m = d.metrics;
+  document.getElementById('lb-metrics').innerHTML = `
+    <div class="lb-metric">
+      <div class="val">${m['Dirty %'].toFixed(2)}</div>
+      <div class="lbl">Dirty %</div>
+    </div>
+    <div class="lb-metric">
+      <div class="val">${m['Median ΔE00'].toFixed(2)}</div>
+      <div class="lbl">Median ΔE₀₀</div>
+    </div>
+    <div class="lb-metric">
+      <div class="val">${m['Median Δab'].toFixed(2)}</div>
+      <div class="lbl">Median Δab</div>
+    </div>`;
+  updateLightboxNav();
+}
+
+function closeLightbox() {
+  lightbox.classList.remove('active');
+  document.body.style.overflow = '';
+}
+
+document.getElementById('lb-close').onclick = closeLightbox;
+document.getElementById('lb-prev').onclick   = () => navigateLightbox(-1);
+document.getElementById('lb-next').onclick   = () => navigateLightbox(+1);
+lightbox.addEventListener('click', e => { if (e.target === lightbox) closeLightbox(); });
+
+document.addEventListener('keydown', e => {
+  if (!lightbox.classList.contains('active')) return;
+  if (e.key === 'Escape')     { closeLightbox(); return; }
+  if (e.key === 'ArrowLeft')  { navigateLightbox(-1); }
+  if (e.key === 'ArrowRight') { navigateLightbox(+1); }
+});
+
+// ── Save ───────────────────────────────────────────────────────────────────
+document.getElementById('btn-save').onclick = async () => {
+  const btn     = document.getElementById('btn-save');
+  const confirm = document.getElementById('save-confirm');
+  btn.disabled  = true;
+  confirm.style.display = 'none';
+  try {
+    const res  = await fetch('/save', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ path: 'results' })
+    });
+    const data = await res.json();
+    if (data.success) {
+      confirm.style.display = 'block';
+      confirm.textContent   = '✓ Saved to: ' + data.path;
+    }
+  } catch (err) {
+    confirm.style.display = 'block';
+    confirm.style.color   = 'var(--red)';
+    confirm.textContent   = '✗ Save failed: ' + err.message;
+  }
+  btn.disabled = false;
+};
+</script>
+</body>
+</html>

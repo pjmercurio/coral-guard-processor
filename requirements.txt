@@ -1,6 +1,14 @@
-numpy
-rawpy
-imageio
-opencv-python
-scikit-image
-openpyxl
+# Web server
+flask>=3.0
+
+# score_tiles.py dependencies
+numpy>=1.24
+opencv-python>=4.8
+rawpy>=0.19
+imageio>=2.31
+scikit-image>=0.21
+openpyxl>=3.1
+
+# app.py / visualization dependencies
+pandas>=2.0
+matplotlib>=3.7
