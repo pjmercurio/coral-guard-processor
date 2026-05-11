@@ -145,3 +145,11 @@ Currently the before image provides the baseline and color drift is corrected al
 
 ### Correlate image scores with reflectance
 The image-based Dirty % / Δab scores and the reflectance-based 675 nm metric are measuring the same biological signal from different instruments. Plotting them against each other across all tiles and timepoints would validate both approaches and potentially let one predict the other.
+
+
+## Screenshots
+<img width="400" alt="Screenshot 2026-05-11 at 1 08 51 PM" src="https://github.com/user-attachments/assets/69206330-761d-4371-a7cf-16677d089d5a" /> <img width="400" alt="Screenshot 2026-05-11 at 1 09 49 PM" src="https://github.com/user-attachments/assets/3265406f-9ec4-4ddb-9182-e80adcd87fdd" />
+
+<img width="400" alt="Screenshot 2026-05-11 at 1 10 08 PM" src="https://github.com/user-attachments/assets/484c99fb-3295-481e-89f2-48c25e94f7b4" /> <img width="400" alt="Screenshot 2026-05-11 at 1 10 21 PM" src="https://github.com/user-attachments/assets/d2e540cc-9759-44a1-a42c-c76397a482e9" />
+
+
