@@ -9,9 +9,10 @@ from pathlib import Path
 from flask import Flask, render_template, request, jsonify, send_from_directory
 import pandas as pd
 import numpy as np
+import cv2
 
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500 MB
+app.config['MAX_CONTENT_LENGTH'] = 2000 * 1024 * 1024  # 2 GB
 
 # ── Directory layout ───────────────────────────────────────────────────────
 BASE_DIR    = Path(__file__).parent
@@ -20,6 +21,8 @@ AFTER_DIR   = BASE_DIR / 'after'
 OUTPUT_DIR  = BASE_DIR / 'outputs'
 DEBUG_DIR   = OUTPUT_DIR / 'debug'
 SESSION_DIR = BASE_DIR / 'session'
+CORAL_LABEL_DIR = BASE_DIR / 'coral_labels'
+_coral_labels = {}   # stem → [[x,y], ...] polygon points
 
 for d in [BEFORE_DIR, AFTER_DIR, OUTPUT_DIR, DEBUG_DIR, SESSION_DIR]:
     d.mkdir(exist_ok=True, parents=True)
@@ -27,6 +30,23 @@ for d in [BEFORE_DIR, AFTER_DIR, OUTPUT_DIR, DEBUG_DIR, SESSION_DIR]:
 import sys
 sys.path.insert(0, str(BASE_DIR))
 import score_tiles as st
+
+def _load_coral_labels():
+    global _coral_labels
+    if not CORAL_LABEL_DIR.exists():
+        return
+    for json_path in CORAL_LABEL_DIR.glob('*.json'):
+        try:
+            data = json.load(open(json_path))
+            for shape in data['shapes']:
+                if shape['label'] == 'coral' and shape['points']:
+                    _coral_labels[json_path.stem] = shape['points']
+                    break
+        except Exception:
+            pass
+    print(f'  Loaded {len(_coral_labels)} coral labels from {CORAL_LABEL_DIR}')
+
+_load_coral_labels()
 
 # ── Routes ─────────────────────────────────────────────────────────────────
 
@@ -39,6 +59,20 @@ def index():
         key=st.natural_tile_sort_key
     )
     return render_template('index.html', before_tiles=before_tiles)
+
+
+@app.route('/progress')
+def get_progress():
+    try:
+        data = json.loads((SESSION_DIR / 'progress.json').read_text())
+    except Exception:
+        data = {'pct': 0, 'msg': ''}
+    return jsonify(data)
+
+def _set_progress(pct, msg=''):
+    (SESSION_DIR / 'progress.json').write_text(
+        json.dumps({'pct': pct, 'msg': msg})
+    )
 
 
 @app.route('/process', methods=['POST'])
@@ -153,7 +187,7 @@ def save():
 
     for chart in ['summary_bar.png', 'per_tile.png',
                   'reflectance_single.png', 'reflectance_spectra.png',
-                  'reflectance_675nm.png']:
+                  'reflectance_675nm.png', 'treatment_chart.png']:
         src = OUTPUT_DIR / chart
         if src.exists():
             shutil.copy(str(src), str(save_dir / chart))
@@ -268,7 +302,7 @@ def _generate_charts(all_metrics):
             jitter = np.random.uniform(-0.12, 0.12, len(vals))
             ax.scatter(gi + jitter, vals, color='white', edgecolor=color,
                        s=45, zorder=5, linewidths=1.5)
-            ax.text(gi, 0.6, f'{m:.2f}', ha='center', va='bottom',
+            ax.text(gi, m * 0.5, f'{m:.2f}', ha='center', va='bottom',
                     fontsize=10, fontweight='bold', color='white', zorder=10)
 
         ax.set_ylim(0, y_lim)
@@ -696,6 +730,481 @@ def _chart_multi_timepoint(timepoints):
     return {'spectra': spectra_b64, 'chl675': chl_b64}
 
 
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TREATMENT EXPERIMENT MODE
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.route('/process_treatments', methods=['POST'])
+def process_treatments():
+    """
+    Accept ORF files grouped by treatment (form field = 'treatment:{name}').
+    Score each tile excluding coral fragment, using pooled before/ as baseline.
+    Returns 3-panel chart with one bar per treatment.
+    """
+    # Group uploaded files by treatment name
+    _set_progress(0, 'Starting treatment analysis…')
+    treatments = {}
+    for field_name in request.files:
+        if field_name.startswith('treatment:'):
+            treatment = field_name[len('treatment:'):]
+            treatments[treatment] = request.files.getlist(field_name)
+
+    if not treatments:
+        return jsonify({'error': 'No treatment files received'}), 400
+
+    # Build global baseline from before/ images (pooled)
+    try:
+        _set_progress(5, 'Building baseline…')
+        global_baseline = _compute_global_baseline()
+        _set_progress(15, 'Baseline ready. Scoring tiles…')
+    except Exception as e:
+        return jsonify({'error': f'Failed to compute baseline from before/ folder: {traceback.format_exc()}'}), 500
+
+    # Score each treatment
+    total = sum(len(f) for f in treatments.values())
+    scored = 0
+    treatment_results = {}
+    treatment_tiles   = {}
+    for treatment, files in treatments.items():
+        tile_metrics = []
+        tiles_out    = []
+        for f in files:
+            tmp_path = AFTER_DIR / f.filename
+            f.save(str(tmp_path))
+            tile_id  = Path(f.filename).stem.upper()
+            try:
+                m, overlay_b64 = _score_tile_treatment(tile_id, tmp_path, global_baseline, treatment)
+                tile_metrics.append(m)
+                tiles_out.append({'id': tile_id, 'metrics': m, 'overlay': overlay_b64})
+                scored += 1
+                pct = 15 + int(80 * scored / total)
+                _set_progress(pct, f'Scored {scored}/{total} tiles…')
+            except Exception:
+                pass
+            finally:
+                tmp_path.unlink(missing_ok=True)
+
+        if tile_metrics:
+            treatment_results[treatment] = {
+                'Dirty %':        float(np.mean([m['Dirty %']     for m in tile_metrics])),
+                'Median ΔE00':    float(np.mean([m['Median ΔE00'] for m in tile_metrics])),
+                'Median Δab':     float(np.mean([m['Median Δab']  for m in tile_metrics])),
+                'Dirty % sd':     float(np.std( [m['Dirty %']     for m in tile_metrics])),
+                'Median ΔE00 sd': float(np.std( [m['Median ΔE00'] for m in tile_metrics])),
+                'Median Δab sd':  float(np.std( [m['Median Δab']  for m in tile_metrics])),
+                'n': len(tile_metrics),
+            }
+            treatment_tiles[treatment] = tiles_out
+
+    if not treatment_results:
+        return jsonify({'error': 'All tiles failed to process.'}), 500
+
+    # Save treatment metrics to session
+    (SESSION_DIR / 'treatment_metrics.json').write_text(json.dumps(treatment_results))
+
+    try:
+        _set_progress(95, 'Generating charts…')
+        chart_b64 = _generate_treatment_charts(treatment_results)
+        _set_progress(100, 'Done!')
+    except Exception:
+        return jsonify({'error': traceback.format_exc()}), 500
+
+    return jsonify({
+        'treatment_metrics': treatment_results,
+        'treatment_tiles':   treatment_tiles,
+        'chart':             chart_b64,
+    })
+
+
+def _compute_global_baseline():
+    """
+    Pool reference images into a single baseline for treatment scoring.
+    Uses tile_reference/ folder if it exists (clean tile patches),
+    otherwise falls back to the first image in before/.
+    """
+    ref_dir = BASE_DIR / 'birch_treatment_reference'
+
+    if ref_dir.exists() and any(ref_dir.iterdir()):
+        ref_imgs = [p for p in ref_dir.iterdir()
+                    if p.suffix.lower() in {'.png', '.jpg', '.jpeg', '.tif', '.tiff'}]
+        print(f'  Using {len(ref_imgs)} clean tile reference patches from tile_reference/')
+    else:
+        ref_imgs = [p for p in BEFORE_DIR.iterdir()
+                    if p.suffix in st.VALID_EXTENSIONS][:1]
+        print(f'  No tile_reference/ found — using before/ images as baseline')
+
+    if not ref_imgs:
+        raise ValueError('No reference images found in tile_reference/ or before/.')
+
+    all_pixels = []
+    for img_path in ref_imgs:
+        try:
+            rgb  = st.read_image_rgb(img_path)
+            crop, mask = st.detect_and_crop_tile(rgb)
+            lab  = st.extract_lab(crop)
+            pixels = st.tile_pixels_from_mask(lab, mask)
+            del rgb, crop, lab, mask
+            all_pixels.append(pixels)
+        except Exception as e:
+            print(f'  Skipping {img_path.name}: {e}')
+            continue
+
+    if not all_pixels:
+        raise ValueError('Could not process any reference images.')
+
+    pooled   = np.vstack(all_pixels)
+    baseline = st.build_before_baseline(pooled)
+    baseline['pixels'] = pooled
+    return baseline
+
+
+def _segment_coral_color(lab_img, tile_mask):
+    """LAB color classifier + largest connected component fallback."""
+    L = lab_img[:, :, 0]
+    A = lab_img[:, :, 1]
+    B = lab_img[:, :, 2]
+
+    if tile_mask.sum() < 10:
+        return np.zeros(lab_img.shape[:2], dtype=bool)
+
+    brown_coral  = (L < 55) & (A >  5) & (B > -5)
+    green_polyps = (L < 65) & (A < -8)
+    raw_mask = ((brown_coral | green_polyps) & tile_mask).astype(np.uint8)
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (60, 60))
+    closed = cv2.morphologyEx(raw_mask, cv2.MORPH_CLOSE, kernel)
+
+    n_labels, labels, stats, _ = cv2.connectedComponentsWithStats(closed)
+    if n_labels <= 1:
+        return raw_mask.astype(bool) & tile_mask
+
+    largest = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
+    blob    = (labels == largest).astype(np.uint8)
+
+    contours, _ = cv2.findContours(blob, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    filled = np.zeros_like(blob)
+    if contours:
+        cv2.drawContours(
+            filled, [max(contours, key=cv2.contourArea)], -1, 255, cv2.FILLED
+        )
+
+    coral_mask = filled.astype(bool) & tile_mask
+    if coral_mask.sum() / max(tile_mask.sum(), 1) > 0.85:
+        thresh = float(np.percentile(L[tile_mask], 40))
+        coral_mask = (L < thresh) & tile_mask
+
+    return coral_mask
+
+# USE THE UPDATED LAB SPACE
+# def _segment_coral(lab_img, tile_mask):
+#     L = lab_img[:, :, 0]
+#     A = lab_img[:, :, 1]
+#     B = lab_img[:, :, 2]
+
+#     if tile_mask.sum() < 10:
+#         return np.zeros(lab_img.shape[:2], dtype=bool)
+
+#     # Brown coral tissue
+#     brown_coral = (L < 55) & (A >  5) & (B > -5)
+#     # Green zoanthid polyps
+#     green_polyps = (L < 65) & (A < -8)
+
+#     raw_mask = ((brown_coral | green_polyps) & tile_mask).astype(np.uint8)
+
+#     # Large closing kernel to bridge gaps between polyps and tissue
+#     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (60, 60))
+#     closed = cv2.morphologyEx(raw_mask, cv2.MORPH_CLOSE, kernel)
+
+#     # Find the largest connected component (the coral body)
+#     n_labels, labels, stats, _ = cv2.connectedComponentsWithStats(closed)
+#     if n_labels <= 1:
+#         return raw_mask.astype(bool) & tile_mask
+
+#     largest = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
+#     largest_blob = (labels == largest).astype(np.uint8)
+
+#     # Fill the entire contour solid — this catches all holes including polyps
+#     contours, _ = cv2.findContours(largest_blob, cv2.RETR_EXTERNAL,
+#                                    cv2.CHAIN_APPROX_SIMPLE)
+#     filled = np.zeros_like(largest_blob)
+#     if contours:
+#         biggest = max(contours, key=cv2.contourArea)
+#         cv2.drawContours(filled, [biggest], -1, 255, cv2.FILLED)
+
+#     # Sanity check
+#     coral_mask = filled.astype(bool) & tile_mask
+#     if coral_mask.sum() / tile_mask.sum() > 0.85:
+#         thresh = float(np.percentile(L[tile_mask], 40))
+#         coral_mask = (L < thresh) & tile_mask
+
+#     return coral_mask
+
+
+def _segment_coral(lab_img, tile_mask):
+    L = lab_img[:, :, 0]
+    A = lab_img[:, :, 1]
+    tile_L = L[tile_mask]
+
+    if len(tile_L) < 10:
+        return np.zeros(lab_img.shape[:2], dtype=bool)
+
+    thresh = float(np.percentile(tile_L, 28))
+
+    # Require both dark AND reddish — excludes green algae and neutral tile
+    raw_mask = (L < thresh) & (L < 55) & (A > 2) & tile_mask
+
+    # Sanity check
+    if raw_mask.sum() / tile_mask.sum() > 0.70:
+        thresh   = float(np.percentile(tile_L, 15))
+        raw_mask = (L < thresh) & (L < 55) & (A > 2) & tile_mask
+
+    # Close small gaps between detected coral pixels
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (40, 40))
+    closed = cv2.morphologyEx(raw_mask.astype(np.uint8), cv2.MORPH_CLOSE, kernel)
+
+    # Keep only the largest connected component (the coral body)
+    n_labels, labels, stats, _ = cv2.connectedComponentsWithStats(closed)
+    if n_labels <= 1:
+        return raw_mask & tile_mask
+
+    largest = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
+    blob    = (labels == largest).astype(np.uint8)
+
+    # Fill the entire contour solid — polyp holes get included automatically
+    contours, _ = cv2.findContours(blob, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    filled = np.zeros_like(blob)
+    if contours:
+        cv2.drawContours(
+            filled, [max(contours, key=cv2.contourArea)], -1, 255, cv2.FILLED
+        )
+
+    return filled.astype(bool) & tile_mask
+
+
+def _save_treatment_overlay(crop, tile_mask, coral_mask, dirty_vector, path):
+    """
+    3-layer overlay for treatment tiles:
+      - Brown shading  = coral fragment (excluded from scoring)
+      - Red pixels     = fouling detected on tile surface
+      - Green contour  = tile boundary
+    """
+    import cv2
+    overlay = (crop * 255).astype(np.uint8).copy()
+    # overlay[coral_mask] = [101, 67, 33]                # brown = coral
+    yellow = np.array([255, 255, 0], dtype=np.float32) # yellow = coral
+    orig  = overlay[coral_mask].astype(np.float32)
+    overlay[coral_mask] = (0.45 * yellow + 0.55 * orig).clip(0, 255).astype(np.uint8)
+    tile_only = tile_mask & ~coral_mask
+    dirty_2d  = np.zeros(tile_mask.shape, dtype=bool)
+    dirty_2d[tile_only] = dirty_vector
+    orig = overlay[dirty_2d].astype(np.float32)
+    red  = np.array([220, 50, 50], dtype=np.float32) # red = fouling
+    overlay[dirty_2d] = (0.6 * red + 0.4 * orig).clip(0, 255).astype(np.uint8)
+    contours, _ = cv2.findContours(
+        tile_mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+    cv2.drawContours(overlay, contours, -1, (0, 200, 0), 2)  # green contour
+    import imageio.v3 as iio
+    iio.imwrite(str(path), overlay)
+
+
+def _score_tile_treatment(tile_id, image_path, global_baseline, treatment_name=''):
+    print(f"  Loading {tile_id}...")
+    """
+    Score one treatment tile against the global pooled baseline,
+    excluding pixels identified as coral fragment.
+    """
+    rgb  = st.read_image_rgb(image_path)
+
+    # Normalize exposure so tile detection works regardless of how dark the photo is.
+    # Stretches the brightest pixels back to 1.0 without clipping shadows.
+    rgb_max = rgb.max()
+    if rgb_max > 0.01:
+        rgb = (rgb / rgb_max).astype(np.float32)
+
+    print(f"  Cropping {tile_id}...")
+    crop, mask = st.detect_and_crop_tile(rgb)
+
+    # Downsample to max 800px on longest side — cuts memory ~10-20x for high-res ORF
+    import cv2
+    h, w = crop.shape[:2]
+    scale = min(1.0, 800 / max(h, w))
+    if scale < 1.0:
+        new_h, new_w = int(h * scale), int(w * scale)
+        crop = cv2.resize(crop, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        mask = cv2.resize(mask.astype(np.uint8), (new_w, new_h),
+                        interpolation=cv2.INTER_NEAREST).astype(bool)
+    print(f"  [{tile_id}] crop shape after resize: {crop.shape}")
+
+    del rgb
+    print(f"  Extracting LAB {tile_id}...")
+    lab  = st.extract_lab(crop)
+    print(f"  Segmenting coral {tile_id}...")
+    # Exclude coral — mask it out before scoring
+    coral_mask      = _segment_coral(lab, mask)
+    tile_only_mask  = mask & ~coral_mask
+    print(f"  Scoring {tile_id}...")
+
+    if tile_only_mask.sum() < 100:
+        raise ValueError(f'Too few tile pixels after coral segmentation ({tile_only_mask.sum()})')
+
+    after_pixels = st.tile_pixels_from_mask(lab, tile_only_mask)
+
+    before_median = np.median(global_baseline['pixels'], axis=0)
+    after_median  = np.median(after_pixels, axis=0)
+
+    residual_ab = np.linalg.norm(
+        after_pixels[:, 1:3] - before_median[1:3], axis=1
+    )
+    dirty_vector = residual_ab > global_baseline['before_threshold_ab']
+
+    from skimage.color import deltaE_ciede2000
+    b_arr = before_median.reshape(1, 1, 3).astype(np.float64)
+    a_arr = after_median.reshape(1, 1, 3).astype(np.float64)
+
+    result = {
+        'residual_dirty_percent_ab': round(100.0 * float(np.mean(dirty_vector)), 2),
+        'median_deltaE00_full':      round(float(deltaE_ciede2000(b_arr, a_arr)[0, 0]), 2),
+        'median_delta_ab':           round(float(np.linalg.norm(after_median[1:3] - before_median[1:3])), 2),
+        'dirty_vector':              dirty_vector,
+    }
+
+    # result = st.score_after_against_before(
+    #     before_pixels = global_baseline['pixels'] if 'pixels' in global_baseline
+    #                     else st.tile_pixels_from_mask(lab, tile_only_mask),  # fallback
+    #     after_pixels  = after_pixels,
+    #     after_lab_img = lab,
+    #     after_mask    = tile_only_mask,
+    #     threshold_ab  = global_baseline['before_threshold_ab'],
+    # )
+
+    metrics = {
+        'Dirty %':     result['residual_dirty_percent_ab'],
+        'Median ΔE00': result['median_deltaE00_full'],
+        'Median Δab':  result['median_delta_ab'],
+    }
+
+    treatment_dir = DEBUG_DIR / treatment_name
+    treatment_dir.mkdir(exist_ok=True)
+    overlay_path = treatment_dir / f'{tile_id}_treatment_overlay.png'
+    _save_treatment_overlay(crop, mask, coral_mask, result['dirty_vector'], overlay_path)
+    with open(str(overlay_path), 'rb') as f:
+        overlay_b64 = base64.b64encode(f.read()).decode()
+
+    return metrics, overlay_b64
+
+
+def _generate_treatment_charts(treatment_results):
+    """
+    3-panel bar chart (Dirty %, ΔE₀₀, Δab) with one bar per treatment.
+    Bars are coloured with a qualitative palette; SD shown as error bars;
+    per-tile n shown above each bar.
+    """
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    # Sort treatments by embedded number
+    def _tsort(name):
+        m = re.search(r'\d+', name)
+        return int(m.group()) if m else 0
+
+    # ONLY FOR THE SPECIAL 4-TREATMENTS CASE
+    # CUSTOM_ORDER = [
+    #     'Treatment 2 (C)',
+    #     'Treatment 9 (C)',
+    #     'Treatment 6 (T)',
+    #     'Treatment 7 (T)',
+    # ]
+    # def _tsort(name):
+    #     if name in CUSTOM_ORDER:
+    #         return CUSTOM_ORDER.index(name)
+    #     m = re.search(r'\d+', name)
+    #     return 1000 + (int(m.group()) if m else 0)
+    # palette = ['#1a1a1a', '#c7c7c7', '#8c564b', '#f49e3f']
+
+
+    treatments  = sorted(treatment_results.keys(), key=_tsort)
+    n_bars      = len(treatments)
+
+    # Qualitative palette — up to 10 distinct colours
+    # palette = [
+    #     '#1a6bb5','#e07b39','#2ca02c','#d62728','#9467bd',
+    #     '#8c564b','#e377c2','#7f7f7f','#bcbd22','#17becf',
+    # ]
+    palette = [
+        '#d62728',  # red
+        '#1a1a1a',  # black
+        '#b39ddb',  # light purple
+        '#98df8a',  # light green
+        '#ffdd57',  # yellow
+        '#8c564b',  # brown
+        '#f49e3f',  # orange
+        '#1a6bb5',  # blue
+        '#c7c7c7',  # light gray
+        '#f9b8c9',  # pink
+    ]
+    colors = [palette[i % len(palette)] for i in range(n_bars)]
+
+    metric_cols = [
+        ('Dirty %',     'Dirty %',     'Dirty % sd'),
+        ('Median ΔE00', 'Median ΔE₀₀', 'Median ΔE00 sd'),
+        ('Median Δab',  'Median Δab',  'Median Δab sd'),
+    ]
+
+    fig, axes = plt.subplots(1, 3, figsize=(max(15, n_bars * 1.8), 7))
+    fig.suptitle(
+        'Treatment Comparison — Tile Cleanliness (Coral Excluded)\n'
+        'CIELAB Color Space. Mean ± SD across tiles per treatment',
+        fontsize=13, fontweight='bold', y=1.02
+    )
+
+    for ax, (col_key, col_label, col_sd) in zip(axes, metric_cols):
+        means = [treatment_results[t][col_key] for t in treatments]
+        sds   = [treatment_results[t][col_sd]  for t in treatments]
+        ns    = [treatment_results[t]['n']      for t in treatments]
+
+        finite_vals = [v for v in means if np.isfinite(v)]
+        y_max  = max(finite_vals) if finite_vals else 1.0
+        y_lim  = max(y_max * 1.45, 1.0)
+
+        ax.bar(range(n_bars), means, yerr=sds, capsize=5,
+               color=colors, edgecolor='white', alpha=0.88, linewidth=1.2,
+               error_kw={'elinewidth': 1.8, 'ecolor': '#444'}, zorder=2)
+
+        # Mean label inside bar
+        for i, (m, sd) in enumerate(zip(means, sds)):
+            if np.isfinite(m):
+                ax.text(i, 0.5, f'{m:.2f}',
+                        ha='center', va='bottom', fontsize=8.5,
+                        fontweight='bold', color='white', zorder=10)
+
+        # n= label above error bar
+        for i, (m, sd, n) in enumerate(zip(means, sds, ns)):
+            if np.isfinite(m):
+                ax.text(i, m + sd + y_lim * 0.03,
+                        f'n={n}', ha='center', va='bottom',
+                        fontsize=7.5, color='#555')
+
+        ax.set_ylim(0, y_lim)
+        ax.set_xticks(range(n_bars))
+        ax.set_xticklabels(treatments, rotation=30, ha='right', fontsize=9)
+        ax.set_ylabel(col_label, fontsize=11)
+        ax.set_title(col_label, fontweight='bold', fontsize=11)
+        ax.grid(True, alpha=0.2, axis='y', linestyle=':')
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+    plt.tight_layout()
+    chart_path = OUTPUT_DIR / 'treatment_chart.png'
+    fig.savefig(str(chart_path), dpi=150, bbox_inches='tight', facecolor='white')
+    plt.close(fig)
+    with open(str(chart_path), 'rb') as f:
+        return base64.b64encode(f.read()).decode()
+
+
 if __name__ == '__main__':
     print("\n  Coral Guard Tile Scorer running at http://localhost:5001\n")
-    app.run(debug=True, port=5001)
+    app.run(debug=False, port=5001)

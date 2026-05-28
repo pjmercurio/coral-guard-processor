@@ -44,9 +44,10 @@ MAX_MASK_FILL_FRACTION = 0.95
 
 # Residual dirty threshold settings
 # Learned from each tile's BEFORE image using a/b chromatic variation only
+# MIN_AB_THRESHOLD = 2.0
 MIN_AB_THRESHOLD = 2.0
 BASELINE_PERCENTILE = 95
-AB_MARGIN = 0.75
+AB_MARGIN = 1.5
 
 # Debug outputs
 SAVE_DEBUG_MASKS = True
@@ -290,7 +291,14 @@ def largest_reasonable_mask(gray_u8: np.ndarray):
         return np.zeros_like(gray_u8, dtype=np.uint8)
 
     candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
-    return candidates[0][2]
+    # Pick whichever candidate contains the center pixel —
+    # tile is always centered enough that the center belongs to it
+    cy, cx = gray_u8.shape[0] // 2, gray_u8.shape[1] // 2
+    for _, _, mask in candidates:
+        if mask[cy, cx] > 0:
+            return mask
+    return candidates[0][2]   # fallback if nothing contains center
+    # return candidates[0][2]
 
 def erode_mask(mask: np.ndarray, frac: float):
     ys, xs = np.where(mask > 0)
@@ -308,14 +316,16 @@ def erode_mask(mask: np.ndarray, frac: float):
 
 def detect_and_crop_tile(rgb: np.ndarray):
     h, w = rgb.shape[:2]
+    cy, cx = h // 2, w // 2
 
     if SEGMENTATION_MODE == "center_crop":
         mask = center_crop_mask(h, w, CENTER_CROP_FRACTION)
     else:
         gray = cv2.cvtColor((rgb * 255).astype(np.uint8), cv2.COLOR_RGB2GRAY)
         mask = largest_reasonable_mask(gray)
-        if mask.sum() == 0:
-            print("Warning: auto segmentation failed, falling back to center crop.")
+        if mask.sum() == 0 or mask[cy, cx] == 0:
+            print("Warning: auto segmentation missed center pixel, falling back to center crop.")
+            # print("Warning: auto segmentation failed, falling back to center crop.")
             mask = center_crop_mask(h, w, CENTER_CROP_FRACTION)
 
     mask = erode_mask(mask, ERODE_BORDER_FRACTION)
@@ -404,7 +414,10 @@ def score_after_against_before(
         axis=1
     )
 
-    dirty_vector = residual_ab > threshold_ab
+    # dirty_vector = residual_ab > threshold_ab
+    # Only flag pixels shifting toward green (negative a*) — ignores shadow artifacts
+    a_shift = corrected_after_pixels[:, 1] - before_median[1]
+    dirty_vector = (residual_ab > threshold_ab) & (a_shift < 0)
     residual_dirty_percent_ab = 100.0 * float(np.mean(dirty_vector))
     cleanliness_score = 100.0 - residual_dirty_percent_ab
 

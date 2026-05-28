@@ -7,9 +7,11 @@
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500;1,400&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,500;0,9..40,700;1,9..40,300&display=swap" rel="stylesheet">
 <style>
   :root {
+    --black:     #1a1a1a;
     --blue:      #1a6bb5;
     --blue-lt:   #80b5f9;
     --blue-dk:   #0f3d66;
+    --light-purple: #b39ddb;
     --ink:       #0e1a24;
     --ink-60:    rgba(14,26,36,0.6);
     --ink-20:    rgba(14,26,36,0.12);
@@ -17,6 +19,12 @@
     --surface:   #f5f7fa;
     --border:    #dde3eb;
     --green:     #2ca02c;
+    --light-green: #98df8a;
+    --yellow:    #ffdd57;
+    --brown:     #8c564b;
+    --orange:    #f49e3f;
+    --light-gray: #c7c7c7;
+    --pink:      #f9b8c9;
     --red:       #d62728;
     --mono:      'DM Mono', monospace;
     --sans:      'DM Sans', sans-serif;
@@ -408,6 +416,17 @@
     </div>
   </div>
 
+
+  <!-- Treatment Queue (shown when treatment folders are detected) -->
+  <div id="treatment-queue" style="display:none; margin-top:20px;">
+    <div class="file-list" id="treatment-list"></div>
+    <div class="queue-actions">
+      <button class="btn-run" id="btn-run-treatment">Analyze Treatments!</button>
+      <button class="btn-clear" id="btn-clear-treatment">Clear</button>
+      <span id="treatment-summary" style="font-size:13px; color:var(--ink-60);"></span>
+    </div>
+  </div>
+
   <!-- Before tiles available -->
   {% if before_tiles %}
   <div class="before-panel">
@@ -501,6 +520,36 @@
       </div>
     </div>
 
+
+    <!-- Collapsible: Treatment Tiles (grouped by treatment) -->
+    <div class="collapsible-section" id="treatment-tiles-area" style="display:none;">
+      <div class="collapsible-header open" data-body="treatment-tiles-body">
+        <div class="collapsible-title">
+          <h3>Treatment Tiles</h3>
+          <span class="tile-count-badge" id="treatment-badge"></span>
+        </div>
+        <svg class="chevron" viewBox="0 0 24 24" stroke-width="2">
+          <polyline points="18 15 12 9 6 15" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+      <div class="collapsible-body open" id="treatment-tiles-body">
+        <div id="treatment-tile-groups"></div>
+      </div>
+    </div>
+
+    <!-- Collapsible: Treatment Summary Chart -->
+    <div class="collapsible-section" id="treatment-area" style="display:none;">
+      <div class="collapsible-header open" data-body="treatment-body">
+        <div class="collapsible-title"><h3>Treatment Summary Chart</h3></div>
+        <svg class="chevron" viewBox="0 0 24 24" stroke-width="2">
+          <polyline points="18 15 12 9 6 15" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+      <div class="collapsible-body open" id="treatment-body">
+        <img id="chart-treatment" class="chart-img" alt="Treatment comparison">
+      </div>
+    </div>
+
   </div><!-- /results-area -->
 
 </main>
@@ -526,6 +575,7 @@
 // ── State ──────────────────────────────────────────────────────────────────
 let stagedFiles  = [];
 let stagedExcels = [];
+const BASE = window.location.pathname.replace(/\/$/, '').replace(/\/[^/]*$/, '') || '';
 
 const beforeTiles = Array.from(document.querySelectorAll('.chip'))
                          .map(c => c.dataset.tile.toLowerCase());
@@ -833,7 +883,9 @@ function openLightbox(tileId) {
 
   document.getElementById('lb-img').src = d.src;
   document.getElementById('lb-caption').textContent =
-    `${tileId}  ·  ${d.isSlips ? 'SLIPS' : 'Control'}`;
+    d.treatmentName
+      ? `${tileId}  ·  ${d.treatmentName}`
+      : d.treatmentName ? `${tileId}  ·  ${d.treatmentName}` : `${tileId}  ·  ${d.isSlips ? 'SLIPS' : 'Control'}`;
   const m = d.metrics;
   document.getElementById('lb-metrics').innerHTML = `
     <div class="lb-metric">
@@ -878,7 +930,9 @@ function openLightboxAtIndex(idx) {
 
   document.getElementById('lb-img').src = d.src;
   document.getElementById('lb-caption').textContent =
-    `${tileId}  ·  ${d.isSlips ? 'SLIPS' : 'Control'}`;
+    d.treatmentName
+      ? `${tileId}  ·  ${d.treatmentName}`
+      : d.treatmentName ? `${tileId}  ·  ${d.treatmentName}` : `${tileId}  ·  ${d.isSlips ? 'SLIPS' : 'Control'}`;
   const m = d.metrics;
   document.getElementById('lb-metrics').innerHTML = `
     <div class="lb-metric">
@@ -937,6 +991,285 @@ document.getElementById('btn-save').onclick = async () => {
   }
   btn.disabled = false;
 };
+
+// ── Treatment experiment mode ───────────────────────────────────────────────
+let stagedTreatments = {};   // { 'Treatment 1': [File, ...], ... }
+// const TREATMENT_RE   = /^Treatment\s+\d+$/i;
+const TREATMENT_RE = /^Treatment\s+\d+/i;
+
+// ── Folder entry helpers ───────────────────────────────────────────────────
+async function readDirEntries(dirEntry) {
+  return new Promise(resolve => {
+    const reader  = dirEntry.createReader();
+    const entries = [];
+    function batch() {
+      reader.readEntries(items => {
+        if (!items.length) { resolve(entries); return; }
+        entries.push(...items);
+        batch();
+      });
+    }
+    batch();
+  });
+}
+
+async function entryToFile(fileEntry) {
+  return new Promise((res, rej) => fileEntry.file(res, rej));
+}
+
+// ── Override drop handler to detect folders ────────────────────────────────
+dropArea.addEventListener('drop', async ev => {
+  ev.preventDefault();
+  dropArea.classList.remove('dragover');
+
+  const items   = Array.from(ev.dataTransfer.items);
+  const entries = items.map(i => i.webkitGetAsEntry ? i.webkitGetAsEntry() : null).filter(Boolean);
+
+  const folders = entries.filter(e => e.isDirectory);
+  const files   = entries.filter(e => e.isFile);
+
+  if (folders.length === 0) {
+    // All files — existing path (already handled by addFiles via 'drop' listener above)
+    return;
+  }
+
+  // Check if dropped folders are directly Treatment folders
+  let treatmentEntries = folders.filter(f => TREATMENT_RE.test(f.name));
+
+  if (treatmentEntries.length === 0 && folders.length === 1) {
+    // Single parent folder — look one level down
+    const sub = await readDirEntries(folders[0]);
+    treatmentEntries = sub.filter(e => e.isDirectory && TREATMENT_RE.test(e.name));
+  }
+
+  if (treatmentEntries.length > 0) {
+    await loadTreatmentFolders(treatmentEntries);
+  } else {
+    // Unknown folder structure — fall back to regular file handling
+    const fileEntries = entries.filter(e => e.isFile);
+    const fileObjs = await Promise.all(fileEntries.map(entryToFile));
+    addFiles(fileObjs);
+  }
+}, true);   // capture phase so this runs BEFORE the existing handler
+
+async function loadTreatmentFolders(folderEntries) {
+  stagedTreatments = {};
+
+  for (const folder of folderEntries) {
+    const entries  = await readDirEntries(folder);
+    const orfFiles = entries.filter(e => e.isFile && e.name.toLowerCase().endsWith('.orf'));
+    if (!orfFiles.length) continue;
+    const files = await Promise.all(orfFiles.map(entryToFile));
+    stagedTreatments[folder.name] = files;
+  }
+
+  renderTreatmentQueue();
+}
+
+function renderTreatmentQueue() {
+  const queueEl   = document.getElementById('treatment-queue');
+  const listEl    = document.getElementById('treatment-list');
+  const summaryEl = document.getElementById('treatment-summary');
+
+  // Hide the standard queue if treatment mode is active
+  document.getElementById('file-queue').style.display = 'none';
+
+  const names = Object.keys(stagedTreatments).sort((a, b) => {
+    const na = parseInt(a.match(/\d+/)?.[0] || 0);
+    const nb = parseInt(b.match(/\d+/)?.[0] || 0);
+    return na - nb;
+  });
+
+  if (!names.length) { queueEl.style.display = 'none'; return; }
+
+  queueEl.style.display = 'block';
+  listEl.innerHTML = '';
+
+  let total = 0;
+  names.forEach(name => {
+    const n   = stagedTreatments[name].length;
+    total    += n;
+    const row = document.createElement('div');
+    row.className = 'file-row';
+    row.innerHTML = `
+      <span class="tile-id">${name}</span>
+      <span class="file-name">${stagedTreatments[name].map(f => f.name).join(', ')}</span>
+      <span class="file-status status-ok">${n} tile${n !== 1 ? 's' : ''}</span>`;
+    listEl.appendChild(row);
+  });
+
+  summaryEl.textContent = `${names.length} treatments · ${total} total tiles`;
+}
+
+document.getElementById('btn-clear-treatment').onclick = () => {
+  stagedTreatments = {};
+  document.getElementById('treatment-queue').style.display  = 'none';
+  document.getElementById('treatment-area').style.display   = 'none';
+  document.getElementById('results-area').style.display     = 'none';
+};
+
+document.getElementById('btn-run-treatment').onclick = runTreatmentAnalysis;
+
+async function runTreatmentAnalysis() {
+  const btn      = document.getElementById('btn-run-treatment');
+  const progress = document.getElementById('progress-area');
+  const fill     = document.getElementById('progress-fill');
+  const label    = document.getElementById('progress-label');
+  const log      = document.getElementById('progress-log');
+
+  btn.disabled = true;
+  btn.textContent = 'Analyzing...';
+  document.getElementById('treatment-area').style.display = 'none';
+  document.getElementById('results-area').style.display   = 'none';
+  progress.style.display = 'block';
+  fill.style.width = '0%';
+  fill.style.background = 'var(--blue)';
+  label.textContent = 'Uploading treatment tiles…';
+  log.textContent   = '';
+
+  const formData = new FormData();
+  const names = Object.keys(stagedTreatments).sort((a, b) => {
+    return (parseInt(a.match(/\d+/)?.[0])||0) - (parseInt(b.match(/\d+/)?.[0])||0);
+  });
+
+  let totalFiles = 0;
+  names.forEach(name => {
+    stagedTreatments[name].forEach(f => {
+      formData.append(`treatment:${name}`, f);
+      totalFiles++;
+    });
+  });
+
+  logLine(`Sending ${totalFiles} files across ${names.length} treatments…`);
+
+  // Start polling progress
+  label.textContent = 'Uploading…';
+  const poller = setInterval(async () => {
+    try {
+      const p = await fetch(`${BASE}/progress`).then(r => r.json());
+      fill.style.width = p.pct + '%';
+      if (p.msg) label.textContent = p.msg;
+    } catch {}
+  }, 500);
+
+  try {
+    const res  = await fetch(`${BASE}/process_treatments`, { method: 'POST', body: formData });
+    label.textContent = 'Generating charts…';
+
+    const data = await res.json();
+
+    if (data.error) {
+      logLine('Error: ' + data.error);
+    } else {
+      // Show results
+      document.getElementById('results-area').style.display            = 'block';
+      document.getElementById('treatment-tiles-area').style.display    = 'block';
+      document.getElementById('treatment-area').style.display          = 'block';
+      document.getElementById('chart-treatment').src =
+        'data:image/png;base64,' + data.chart;
+
+      renderTreatmentTiles(data.treatment_tiles || {});
+
+      const n = Object.keys(data.treatment_metrics || {}).length;
+      document.getElementById('treatment-badge').textContent = `${n} treatments`;
+      logLine(`Done. ${n} treatments scored.`);
+    }
+  } catch (err) {
+    logLine('ERROR: ' + err.message);
+    console.error(err);
+  }
+
+  clearInterval(poller);
+  fill.style.width  = '100%';
+  fill.style.background = 'var(--green)';
+  label.textContent = 'Done ✓';
+  btn.disabled = false;
+  btn.textContent = 'Re-Analyze Treatments!';
+  document.getElementById('results-area').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+
+// ── Treatment tile rendering ────────────────────────────────────────────────
+const TREATMENT_PALETTE = [
+  '#d62728','#1a1a1a','#b39ddb','#98df8a','#ffdd57',
+  '#8c564b','#f49e3f','#1a6bb5','#c7c7c7','#f9b8c9',
+];
+
+function renderTreatmentTiles(treatmentTiles) {
+  const container = document.getElementById('treatment-tile-groups');
+  container.innerHTML = '';
+
+  const names = Object.keys(treatmentTiles).sort((a, b) => {
+    return (parseInt(a.match(/\d+/)?.[0])||0) - (parseInt(b.match(/\d+/)?.[0])||0);
+  });
+
+  // Rebuild tileOrder and tileDataStore for lightbox navigation
+  tileOrder = [];
+  names.forEach(name => {
+    (treatmentTiles[name] || []).forEach(t => {
+      const uid = `${name}_${t.id}`;
+      tileDataStore[uid] = {
+        src:           'data:image/png;base64,' + t.overlay,
+        metrics:       t.metrics,
+        isSlips:       false,
+        treatmentName: name,
+      };
+      tileOrder.push(uid);
+    });
+  });
+
+  names.forEach((name, ni) => {
+    const tiles = treatmentTiles[name] || [];
+    const color = TREATMENT_PALETTE[ni % TREATMENT_PALETTE.length];
+
+    const header = document.createElement('div');
+    header.style.cssText = `display:flex;align-items:center;gap:10px;margin:${ni===0?'4px':'20px'} 0 10px;`;
+    header.innerHTML = `
+      <div style="width:12px;height:12px;border-radius:3px;background:${color};flex-shrink:0;"></div>
+      <span style="font-weight:600;font-size:13px;">${name}</span>
+      <span style="font-family:var(--mono);font-size:11px;color:var(--ink-60);">
+        ${tiles.length} tile${tiles.length !== 1 ? 's' : ''}
+      </span>`;
+    container.appendChild(header);
+
+    const grid = document.createElement('div');
+    grid.className = 'tile-grid';
+
+    tiles.forEach((t, ti) => {
+      const uid = `${name}_${t.id}`;
+      const card = document.createElement('div');
+      card.className = 'tile-card';
+      card.style.animationDelay = `${(ni * 7 + ti) * 0.04}s`;
+      card.style.cursor = 'pointer';
+      card.innerHTML = `
+        <div class="tile-card-header" style="background:${color};">
+          <span class="tile-label">${t.id}</span>
+          <span class="group-badge">${name}</span>
+        </div>
+        <img class="tile-overlay"
+             src="data:image/png;base64,${t.overlay}"
+             alt="Overlay ${t.id}" loading="lazy">
+        <div class="tile-metrics">
+          <div class="metric-item">
+            <div class="metric-value">${t.metrics['Dirty %'].toFixed(1)}</div>
+            <div class="metric-label">Dirty %</div>
+          </div>
+          <div class="metric-item">
+            <div class="metric-value">${t.metrics['Median ΔE00'].toFixed(2)}</div>
+            <div class="metric-label">ΔE\u2080\u2080</div>
+          </div>
+          <div class="metric-item">
+            <div class="metric-value">${t.metrics['Median Δab'].toFixed(2)}</div>
+            <div class="metric-label">Δab</div>
+          </div>
+        </div>`;
+      card.addEventListener('click', () => openLightbox(uid));
+      grid.appendChild(card);
+    });
+    container.appendChild(grid);
+  });
+}
+
 </script>
 </body>
 </html>

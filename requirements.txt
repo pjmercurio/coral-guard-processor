@@ -8,6 +8,7 @@ rawpy>=0.19
 imageio>=2.31
 scikit-image>=0.21
 openpyxl>=3.1
+segment-anything
 
 # app.py / visualization dependencies
 pandas>=2.0
