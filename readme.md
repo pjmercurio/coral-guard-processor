@@ -11,8 +11,8 @@ The pipeline supports both RAW images (such as Olympus `.ORF`) and standard imag
 ## Setup
 
 ```bash
-# 1. Install dependencies
-pip install -r requirements.txt (it may be pip3 instead of pip)
+# 1. Install dependencies (try pip3 if pip doesnt work)
+pip install -r requirements.txt
 
 # 2. Put your before baseline images in the before/ folder
 #    Filenames must match the after images exactly, e.g.:
