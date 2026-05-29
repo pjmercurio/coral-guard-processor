@@ -11,17 +11,22 @@ The pipeline supports both RAW images (such as Olympus `.ORF`) and standard imag
 ## Setup
 
 ```bash
-# 1. Install dependencies (try pip3 if pip doesnt work)
+# 1. Clone this repo to your local machine using SSH.
+
+# 2. Open terminal or other command line interface and cd into coral-guard-processor folder on your computer.
+Example: cd /users/paulmercurio/Documents/CRE/coral-guard-processor
+
+# 3. Install dependencies (try pip3 if pip doesnt work)
 pip install -r requirements.txt
 
-# 2. Put your before baseline images in the before/ folder
+# 4. Put your before baseline images in the before/ folder
 #    Filenames must match the after images exactly, e.g.:
 #      before/S1.orf
 
-# 3. RUN THE APP
+# 5. RUN THE APP
 python app.py
 
-# 4. Then drag after images with matching names to the web app interface. 3 types of files work:
+# 6. Then drag after images with matching names to the web app interface. 3 types of files work:
         1. After cleaning images named C1.ORF, C2.ORF, S1.ORF, S2.ORF, etc.
         2. Spectral analysis .xlxs files (1 or multiple)
         3. Treatment folders of .ORF images such as for the Birch experiment: Treatment 1, Treatment 2, etc.
