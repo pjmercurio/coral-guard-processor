@@ -12,18 +12,19 @@ The pipeline supports both RAW images (such as Olympus `.ORF`) and standard imag
 
 ```bash
 # 1. Install dependencies
-pip install -r requirements.txt
+pip install -r requirements.txt (it may be pip3 instead of pip)
 
-# 2. Place score_tiles.py in this directory (same level as app.py)
-cp /path/to/score_tiles.py .
-
-# 3. Put your before baseline images in the before/ folder
+# 2. Put your before baseline images in the before/ folder
 #    Filenames must match the after images exactly, e.g.:
-#      before/S1.orf  ↔  drop: S1.orf
-mkdir -p before
+#      before/S1.orf
 
-# 4. Run the app
+# 3. RUN THE APP
 python app.py
+
+# 4. Then drag after images with matching names to the web app interface. 3 types of files work:
+        1. After cleaning images named C1.ORF, C2.ORF, S1.ORF, S2.ORF, etc.
+        2. Spectral analysis .xlxs files (1 or multiple)
+        3. Treatment folders of .ORF images such as for the Birch experiment: Treatment 1, Treatment 2, etc.
 ```
 
 Then open **http://localhost:5001** in your browser.
